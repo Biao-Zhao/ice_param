@@ -92,11 +92,12 @@ contains
 
 !#######################################################################
 
- subroutine compute_ocean_roughness ( ocean, u_star,  &
+ subroutine compute_ocean_roughness ( ocean, u_star,  u_star_wav, charnock_wav, &
                                       rough_mom, rough_heat, rough_moist )
 
  logical, intent(in)  :: ocean(:,:)
  real,    intent(in)  :: u_star(:,:)
+ real,    intent(in)  :: u_star_wav(:,:), charnock_wav(:,:)
  real,    intent(out) :: rough_mom(:,:), rough_heat(:,:), rough_moist(:,:)
 
 !-----------------------------------------------------------------------
@@ -266,6 +267,32 @@ contains
           rough_heat  = 0.0
           rough_moist = 0.0
       endwhere
+
+   !  --- sea surface oughness calculated in a Wave Boundary Layer Model (WBLM) of WW3, Added by Biao  
+   else if (trim(rough_scheme) == 'wblm') then
+      rough_mom_init = 1.e-03
+      ustar_min = 1.e-05
+      ustar(:,:) = u_star_wav(:,:)
+      z0(:,:) = rough_mom_init
+      where (ocean)
+        ustar(:,:)  = max(ustar(:,:), ustar_min)
+        ustar2(:,:) = ustar(:,:)*ustar(:,:)
+        xx1(:,:)    = gnu/ustar(:,:)
+        xx2(:,:)    = ustar2(:,:)/grav
+        z0(:,:)     = charnock_wav(:,:)*xx2(:,:) + zcom2*xx1(:,:)
+      endwhere
+
+      where (ocean)
+        rough_mom  (:,:) = z0(:,:)
+        rough_mom  (:,:) = max( rough_mom  (:,:), roughness_min )
+        rough_heat (:,:) = rough_mom  (:,:)
+        rough_moist(:,:) = rough_mom  (:,:)
+      elsewhere
+        rough_mom   = 0.0
+        rough_heat  = 0.0
+        rough_moist = 0.0
+      endwhere
+
 
    else
       call mpp_error(FATAL, '==>Error from ocean_rough_mod(compute_ocean_roughness): '//&
