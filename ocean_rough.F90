@@ -20,8 +20,7 @@
 module ocean_rough_mod
 
 !-----------------------------------------------------------------------
-
-use          mpp_mod, only: input_nml_file
+use       mpp_mod, only: input_nml_file
 
 use       fms_mod, only: error_mesg, FATAL,  mpp_error, &
                          check_nml_error, mpp_pe, mpp_root_pe, &
@@ -92,28 +91,57 @@ contains
 
 !#######################################################################
 
- subroutine compute_ocean_roughness ( ocean, u_star,  u_star_wav, charnock_wav, &
-                                      rough_mom, rough_heat, rough_moist )
+ subroutine compute_ocean_roughness ( ocean, u_star, rough_mom, rough_heat, &
+                                    rough_moist, charnock_wav )
 
  logical, intent(in)  :: ocean(:,:)
  real,    intent(in)  :: u_star(:,:)
- real,    intent(in)  :: u_star_wav(:,:), charnock_wav(:,:)
+ real,    intent(in), optional ::  charnock_wav(:,:)
  real,    intent(out) :: rough_mom(:,:), rough_heat(:,:), rough_moist(:,:)
-
 !-----------------------------------------------------------------------
 !  computes ocean roughness for momentum using wind stress
 !  and sets roughness for heat/moisture using namelist value
 !-----------------------------------------------------------------------
 
-   real, dimension(size(ocean,1),size(ocean,2)) :: ustar2, xx1, xx2, w10 !miz
-   real, dimension(size(ocean,1),size(ocean,2)) :: ustar, xx3, u10n, z0, zt, z1,  &
+ real, dimension(size(ocean,1),size(ocean,2)) :: ustar2, xx1, xx2, w10 !miz
+ real, dimension(size(ocean,1),size(ocean,2)) :: ustar, xx3, u10n, z0, zt, z1,  &
                                                    alpha_v, reynolds_rough
-   real:: zt1
-   integer :: i, j, n, iter
-   real :: ustar_min, m, b, u_max, rough_mom_init
+ real:: zt1
+ integer :: i, j, n, iter
+ real :: ustar_min, m, b, u_max, rough_mom_init
 
-   if (do_init) call ocean_rough_init
+ if (do_init) call ocean_rough_init
+ 
+ !---- --- sea surface roughness calculated in a Wave Boundary Layer Model (WBLM) of WW3, Added by Biao 
+ if ( present(charnock_wav)) then
+      if (trim(rough_scheme) /= 'wblm') then
+         call mpp_error(FATAL, "do_waves=.true. requires rough_scheme='wblm'")
+      else
+         rough_mom_init = 1.e-03
+         ustar_min = 1.e-05
+         ustar(:,:) = u_star(:,:)
+         z0(:,:) = rough_mom_init
+         where (ocean)
+           ustar(:,:)  = max(ustar(:,:), ustar_min)
+           ustar2(:,:) = ustar(:,:)*ustar(:,:)
+           xx1(:,:)    = gnu/ustar(:,:)
+           xx2(:,:)    = ustar2(:,:)/grav
+           z0(:,:)     = charnock_wav(:,:)*xx2(:,:) + zcom2*xx1(:,:)
+         endwhere
 
+         where (ocean)
+           rough_mom  (:,:) = z0(:,:)
+           rough_mom  (:,:) = max( rough_mom  (:,:), roughness_min )
+           rough_heat (:,:) = rough_mom  (:,:)
+           rough_moist(:,:) = rough_mom  (:,:)
+         elsewhere
+           rough_mom   = 0.0
+           rough_heat  = 0.0
+           rough_moist = 0.0
+         endwhere
+      end if
+      return
+ else
 
    if (trim(rough_scheme) == 'fixed') then
 
@@ -196,35 +224,35 @@ contains
       ustar(:,:)=u_star(:,:)
       where (ocean)
           ustar(:,:)  = max(ustar(:,:), ustar_min)  ! IH
-	  ustar2(:,:) = ustar(:,:)*ustar(:,:)
+          ustar2(:,:) = ustar(:,:)*ustar(:,:)
           xx1(:,:)    = gnu/ustar(:,:)
           xx2(:,:)    = ustar2(:,:)/grav
-	  xx3(:,:)    = ustar(:,:)/vonkarm 
-      endwhere	  
+          xx3(:,:)    = ustar(:,:)/vonkarm 
+      endwhere
       !if rough_mom is available in input then set z0(:,:) to this input value
       z0(:,:) = rough_mom_init
       iter = 5      ! IH - overkill
       do j=1,size(ocean,2)
-     	do i=1,size(ocean,1)
+        do i=1,size(ocean,1)
            if ( ocean(i,j) ) then
               do n = 1, iter
-	      	 u10n(i,j) = xx3(i,j)*log(10/z0(i,j))             ! "neutral" 10m wind
-	    	 alpha_v(i,j) = m*min(u10n(i,j),u_max) + b;     ! Charnock coefficient, Edson 2013
-	    	 z1(i,j) = zcom2*xx1(i,j) + alpha_v(i,j)*xx2(i,j) ! Edson 2013
-	    	 z0(i,j) = z1(i,j);                               !IH -- iteration
-	      enddo
+                 u10n(i,j) = xx3(i,j)*log(10/z0(i,j))             ! "neutral" 10m wind
+                 alpha_v(i,j) = m*min(u10n(i,j),u_max) + b;     ! Charnock coefficient, Edson 2013
+                 z1(i,j) = zcom2*xx1(i,j) + alpha_v(i,j)*xx2(i,j) ! Edson 2013
+                 z0(i,j) = z1(i,j);                               !IH -- iteration
+              enddo
            endif
         enddo
       enddo
 
       where (ocean)
-      	  rough_mom  (:,:) = z0(:,:)
-      	  rough_mom  (:,:) = max( rough_mom  (:,:), roughness_min )
+          rough_mom  (:,:) = z0(:,:)
+          rough_mom  (:,:) = max( rough_mom  (:,:), roughness_min )
 
-	  reynolds_rough(:,:) = ustar(:,:)*rough_mom(:,:)/gnu
-	  rough_heat (:,:)    = 5.5e-05*(reynolds_rough(:,:)**(-0.6))
-	  rough_heat (:,:)    = min(1.1e-04, rough_heat(:,:))
-	  rough_moist(:,:)    = rough_heat (:,:)
+          reynolds_rough(:,:) = ustar(:,:)*rough_mom(:,:)/gnu
+          rough_heat (:,:)    = 5.5e-05*(reynolds_rough(:,:)**(-0.6))
+          rough_heat (:,:)    = min(1.1e-04, rough_heat(:,:))
+          rough_moist(:,:)    = rough_heat (:,:)
       elsewhere
           rough_mom   = 0.0
           rough_heat  = 0.0
@@ -267,37 +295,15 @@ contains
           rough_heat  = 0.0
           rough_moist = 0.0
       endwhere
-
-   !  --- sea surface oughness calculated in a Wave Boundary Layer Model (WBLM) of WW3, Added by Biao  
+   
    else if (trim(rough_scheme) == 'wblm') then
-      rough_mom_init = 1.e-03
-      ustar_min = 1.e-05
-      ustar(:,:) = u_star_wav(:,:)
-      z0(:,:) = rough_mom_init
-      where (ocean)
-        ustar(:,:)  = max(ustar(:,:), ustar_min)
-        ustar2(:,:) = ustar(:,:)*ustar(:,:)
-        xx1(:,:)    = gnu/ustar(:,:)
-        xx2(:,:)    = ustar2(:,:)/grav
-        z0(:,:)     = charnock_wav(:,:)*xx2(:,:) + zcom2*xx1(:,:)
-      endwhere
-
-      where (ocean)
-        rough_mom  (:,:) = z0(:,:)
-        rough_mom  (:,:) = max( rough_mom  (:,:), roughness_min )
-        rough_heat (:,:) = rough_mom  (:,:)
-        rough_moist(:,:) = rough_mom  (:,:)
-      elsewhere
-        rough_mom   = 0.0
-        rough_heat  = 0.0
-        rough_moist = 0.0
-      endwhere
-
+      call mpp_error(FATAL, "rough_scheme='wblm' shouldn't be used if do_waves= .false.")
 
    else
       call mpp_error(FATAL, '==>Error from ocean_rough_mod(compute_ocean_roughness): '//&
             'Unknown roughness scheme (case sensitive): ' //trim(rough_scheme))
    endif
+ endif
 
 !-----------------------------------------------------------------------
 
